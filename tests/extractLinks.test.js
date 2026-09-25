@@ -91,6 +91,63 @@ describe('dedupeUrls', () => {
   });
 });
 
+describe('isUsefulDescription', () => {
+  it('rejects empty / whitespace / too short', () => {
+    const { isUsefulDescription } = api();
+    expect(isUsefulDescription('', 'https://a.com')).toBe(false);
+    expect(isUsefulDescription('   ', 'https://a.com')).toBe(false);
+    expect(isUsefulDescription('a', 'https://a.com')).toBe(false);
+  });
+
+  it('rejects raw URL as description', () => {
+    const { isUsefulDescription } = api();
+    const url = 'https://skills.example.com/x';
+    expect(isUsefulDescription(url, url)).toBe(false);
+    expect(isUsefulDescription(url.toUpperCase(), url)).toBe(false);
+    expect(isUsefulDescription(url + '/', url)).toBe(false);
+  });
+
+  it('accepts a real label', () => {
+    expect(api().isUsefulDescription('My course', 'https://a.com/x')).toBe(
+      true
+    );
+  });
+});
+
+describe('labelBeforeUrl', () => {
+  it('returns preceding label stripping separators', () => {
+    const line = 'My course: https://skills.example.com/x';
+    const url = 'https://skills.example.com/x';
+    expect(api().labelBeforeUrl(line, url)).toBe('My course');
+  });
+
+  it('returns null for bare URL line', () => {
+    const url = 'https://skills.example.com/x';
+    expect(api().labelBeforeUrl(url, url)).toBeNull();
+    expect(api().labelBeforeUrl(`  ${url}  `, url)).toBeNull();
+  });
+});
+
+describe('extractLinkRecordsFromText', () => {
+  it('extracts description from labeled line', () => {
+    const text = 'My course: https://skills.example.com/x';
+    const records = api().extractLinkRecordsFromText(text, 'description');
+    expect(records).toHaveLength(1);
+    expect(records[0].url).toBe('https://skills.example.com/x');
+    expect(records[0].source).toBe('description');
+    expect(records[0].description).toBe('My course');
+  });
+
+  it('bare URL line has no description', () => {
+    const text = 'https://skills.example.com/x';
+    const records = api().extractLinkRecordsFromText(text, 'comment');
+    expect(records).toHaveLength(1);
+    expect(records[0].url).toBe('https://skills.example.com/x');
+    expect(records[0].source).toBe('comment');
+    expect(records[0].description).toBeUndefined();
+  });
+});
+
 describe('mergeLinkRecords', () => {
   it('prefers description over comment for same URL', () => {
     const merged = api().mergeLinkRecords([
@@ -107,5 +164,69 @@ describe('mergeLinkRecords', () => {
       { url: 'https://a.com/2', source: 'comment' },
     ]);
     expect(merged).toHaveLength(2);
+  });
+
+  it('prefers non-empty description when merging', () => {
+    const merged = api().mergeLinkRecords([
+      { url: 'https://a.com/x', source: 'comment' },
+      {
+        url: 'https://a.com/x',
+        source: 'comment',
+        description: 'Cool link',
+      },
+    ]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0].description).toBe('Cool link');
+    expect(merged[0].source).toBe('comment');
+  });
+
+  it('prefers description source over comment and keeps useful description', () => {
+    const merged = api().mergeLinkRecords([
+      {
+        url: 'https://a.com/x',
+        source: 'comment',
+        description: 'From comment',
+      },
+      { url: 'https://a.com/x', source: 'description' },
+    ]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0].source).toBe('description');
+    expect(merged[0].description).toBe('From comment');
+  });
+
+  it('upgrades empty description when higher-priority source arrives with one', () => {
+    const merged = api().mergeLinkRecords([
+      { url: 'https://a.com/x', source: 'comment' },
+      {
+        url: 'https://a.com/x',
+        source: 'description',
+        description: 'Official',
+      },
+    ]);
+    expect(merged[0].source).toBe('description');
+    expect(merged[0].description).toBe('Official');
+  });
+});
+
+describe('formatCopyLine', () => {
+  it('includes description when useful', () => {
+    expect(
+      api().formatCopyLine({
+        url: 'https://a.com/x',
+        description: 'My course',
+      })
+    ).toBe('My course — https://a.com/x');
+  });
+
+  it('returns url only without description', () => {
+    expect(api().formatCopyLine({ url: 'https://a.com/x' })).toBe(
+      'https://a.com/x'
+    );
+    expect(
+      api().formatCopyLine({
+        url: 'https://a.com/x',
+        description: 'https://a.com/x',
+      })
+    ).toBe('https://a.com/x');
   });
 });

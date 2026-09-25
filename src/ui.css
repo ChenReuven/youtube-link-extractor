@@ -179,6 +179,22 @@
   color: #fc8;
 }
 
+
+#yle-root .yle-item-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+#yle-root .yle-desc {
+  color: #aaa;
+  font-size: 11px;
+  margin-bottom: 2px;
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
+
 #yle-root .yle-link {
   color: #6af;
   text-decoration: none;

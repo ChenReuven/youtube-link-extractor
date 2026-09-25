@@ -145,20 +145,33 @@
     }
     if (copyBtn) copyBtn.disabled = false;
     const frag = document.createDocumentFragment();
-    for (const { url, source } of records) {
+    const { isUsefulDescription } = globalThis.ExtractLinks || {};
+    for (const { url, source, description } of records) {
       const li = document.createElement('li');
       li.className = 'yle-item';
+      const badge = document.createElement('span');
+      badge.className = `yle-badge yle-badge-${source}`;
+      badge.textContent = source;
+      const body = document.createElement('div');
+      body.className = 'yle-item-body';
+      if (
+        description &&
+        (!isUsefulDescription || isUsefulDescription(description, url))
+      ) {
+        const desc = document.createElement('div');
+        desc.className = 'yle-desc';
+        desc.textContent = description;
+        body.appendChild(desc);
+      }
       const a = document.createElement('a');
       a.href = url;
       a.target = '_blank';
       a.rel = 'noopener noreferrer';
       a.textContent = url;
       a.className = 'yle-link';
-      const badge = document.createElement('span');
-      badge.className = `yle-badge yle-badge-${source}`;
-      badge.textContent = source;
+      body.appendChild(a);
       li.appendChild(badge);
-      li.appendChild(a);
+      li.appendChild(body);
       frag.appendChild(li);
     }
     list.appendChild(frag);
@@ -175,22 +188,56 @@
     const copyBtn = document.getElementById('yle-copy');
     if (copyBtn) copyBtn.disabled = true;
 
-    const { extractUrls, mergeLinkRecords } = globalThis.ExtractLinks || {};
-    const { fetchCommentLinks } = globalThis.YouTubeComments || {};
+    const {
+      extractUrls,
+      extractLinkRecordsFromText,
+      mergeLinkRecords,
+      isUsefulDescription,
+    } = globalThis.ExtractLinks || {};
+    const { fetchCommentLinks, resolvePossiblyRedirectedUrl } =
+      globalThis.YouTubeComments || {};
 
     const records = [];
 
     try {
       const descText = getDescriptionText();
-      const descUrls = extractUrls ? extractUrls(descText) : [];
-      for (const url of descUrls) {
-        records.push({ url, source: 'description' });
+      if (extractLinkRecordsFromText) {
+        records.push(...extractLinkRecordsFromText(descText, 'description'));
+      } else if (extractUrls) {
+        for (const url of extractUrls(descText)) {
+          records.push({ url, source: 'description' });
+        }
       }
+
+      // Walk description DOM anchors for anchor-text labels
+      const descRoot =
+        $('#description-inline-expander') ||
+        $('#description') ||
+        $('ytd-video-secondary-info-renderer');
+      if (descRoot) {
+        descRoot.querySelectorAll('a[href]').forEach((a) => {
+          const href = a.href || a.getAttribute('href');
+          if (!href) return;
+          const url =
+            resolvePossiblyRedirectedUrl?.(href) ||
+            globalThis.YouTubeComments?.resolvePossiblyRedirectedUrl?.(href) ||
+            href;
+          if (!/^https?:\/\//i.test(url)) return;
+          const text = (a.textContent || '').trim();
+          if (isUsefulDescription && isUsefulDescription(text, url)) {
+            records.push({ url, source: 'description', description: text });
+          } else if (!extractLinkRecordsFromText) {
+            records.push({ url, source: 'description' });
+          }
+        });
+      }
+
+      const descCount = records.length;
       setStatus(
-        `Description: ${descUrls.length} link(s). Fetching comments (max ${MAX_COMMENT_PAGES} pages)…`
+        `Description: ${descCount} link(s). Fetching comments (max ${MAX_COMMENT_PAGES} pages)…`
       );
 
-      let commentResult = { urls: [], pages: 0 };
+      let commentResult = { urls: [], records: [], pages: 0 };
       if (fetchCommentLinks) {
         commentResult = await fetchCommentLinks({
           maxPages: MAX_COMMENT_PAGES,
@@ -202,8 +249,18 @@
         });
       }
 
-      for (const url of commentResult.urls || []) {
-        records.push({ url, source: 'comment' });
+      if (commentResult.records && commentResult.records.length) {
+        for (const rec of commentResult.records) {
+          records.push({
+            url: rec.url,
+            source: 'comment',
+            ...(rec.description ? { description: rec.description } : {}),
+          });
+        }
+      } else {
+        for (const url of commentResult.urls || []) {
+          records.push({ url, source: 'comment' });
+        }
       }
 
       lastRecords = mergeLinkRecords
@@ -239,7 +296,10 @@
   }
 
   function copyAll() {
-    const text = lastRecords.map((r) => r.url).join('\n');
+    const { formatCopyLine } = globalThis.ExtractLinks || {};
+    const text = lastRecords
+      .map((r) => (formatCopyLine ? formatCopyLine(r) : r.url))
+      .join('\n');
     if (!text) return;
     navigator.clipboard.writeText(text).then(
       () => setStatus(`Copied ${lastRecords.length} link(s) to clipboard.`),

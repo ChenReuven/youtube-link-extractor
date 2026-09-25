@@ -326,7 +326,7 @@ async function fetchContinuation(cfg, token) {
  * @param {object} options
  * @param {number} [options.maxPages=20]
  * @param {(info:{page:number,totalTexts:number})=>void} [options.onProgress]
- * @returns {Promise<{urls: string[], pages: number, error?: string}>}
+ * @returns {Promise<{urls: string[], records: Array<{url: string, description?: string}>, pages: number, error?: string}>}
  */
 async function fetchCommentLinks(options = {}) {
   const maxPages = options.maxPages ?? DEFAULT_MAX_PAGES;
@@ -334,11 +334,14 @@ async function fetchCommentLinks(options = {}) {
   const extractUrls =
     (globalThis.ExtractLinks && globalThis.ExtractLinks.extractUrls) ||
     (() => []);
+  const extractLinkRecordsFromText =
+    globalThis.ExtractLinks && globalThis.ExtractLinks.extractLinkRecordsFromText;
 
   const cfg = getInnertubeConfig();
   if (!cfg || !cfg.apiKey) {
     return {
       urls: [],
+      records: [],
       pages: 0,
       error: 'Could not read Innertube credentials from the page (ytcfg).',
     };
@@ -351,6 +354,7 @@ async function fetchCommentLinks(options = {}) {
     if (!videoId) {
       return {
         urls: [],
+        records: [],
         pages: 0,
         error: 'No comments continuation token found on this page.',
       };
@@ -378,6 +382,7 @@ async function fetchCommentLinks(options = {}) {
     } catch (e) {
       return {
         urls: [],
+        records: [],
         pages: 0,
         error: `Failed to prime comments: ${e.message || e}`,
       };
@@ -387,12 +392,14 @@ async function fetchCommentLinks(options = {}) {
   if (!token) {
     return {
       urls: [],
+      records: [],
       pages: 0,
       error: 'Comments are unavailable or not loaded for this video.',
     };
   }
 
   const allUrls = [];
+  const allRecords = [];
   let pages = 0;
   let totalTexts = 0;
   const seenTokens = new Set();
@@ -414,10 +421,19 @@ async function fetchCommentLinks(options = {}) {
           /https?:\/\/(?:www\.)?youtube\.com\/redirect\?[^\s]+/gi,
           (m) => resolvePossiblyRedirectedUrl(m)
         );
-        allUrls.push(...extractUrls(expanded));
+        if (extractLinkRecordsFromText) {
+          const recs = extractLinkRecordsFromText(expanded, 'comment');
+          allRecords.push(...recs);
+          allUrls.push(...recs.map((r) => r.url));
+        } else {
+          allUrls.push(...extractUrls(expanded));
+        }
         // If the whole "text" is itself a URL (from endpoint), include it
         if (/^https?:\/\//i.test(resolved.trim())) {
           allUrls.push(resolved.trim());
+          if (extractLinkRecordsFromText) {
+            allRecords.push({ url: resolved.trim(), source: 'comment' });
+          }
         }
       }
       if (onProgress) onProgress({ page: pages, totalTexts });
@@ -425,8 +441,12 @@ async function fetchCommentLinks(options = {}) {
       if (!token) break;
     }
   } catch (e) {
+    const dedupeErr =
+      (globalThis.ExtractLinks && globalThis.ExtractLinks.dedupeUrls) ||
+      ((a) => [...new Set(a)]);
     return {
-      urls: allUrls,
+      urls: dedupeErr(allUrls),
+      records: allRecords,
       pages,
       error: e.message || String(e),
     };
@@ -435,7 +455,7 @@ async function fetchCommentLinks(options = {}) {
   const dedupe =
     (globalThis.ExtractLinks && globalThis.ExtractLinks.dedupeUrls) ||
     ((a) => [...new Set(a)]);
-  return { urls: dedupe(allUrls), pages, maxPages };
+  return { urls: dedupe(allUrls), records: allRecords, pages, maxPages };
 }
 
 const YouTubeComments = {
