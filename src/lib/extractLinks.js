@@ -6,9 +6,21 @@
 const URL_RE =
   /https?:\/\/(?:www\.)?[-a-zA-Z0-9@:%._+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b(?:[-a-zA-Z0-9()@:%_+.~#?&/=]*)/gi;
 
+const DESC_MAX = 120;
+
 /** Strip common trailing punctuation that is not part of the URL. */
 function trimTrailingPunctuation(url) {
   return url.replace(/[),.;:!?'"\]]+$/g, '');
+}
+
+/**
+ * Trim, collapse whitespace, and cap length for stored descriptions.
+ * @param {unknown} text
+ * @returns {string}
+ */
+function sanitizeDescription(text) {
+  if (text == null) return '';
+  return String(text).trim().replace(/\s+/g, ' ').slice(0, DESC_MAX);
 }
 
 /**
@@ -66,6 +78,47 @@ function normalizeUrl(raw) {
 }
 
 /**
+ * Whether text is a useful human label for a URL (not empty, not the URL itself).
+ * Trims / collapses whitespace; storage length is capped at ~120 chars.
+ * @param {unknown} text
+ * @param {string} [url]
+ * @returns {boolean}
+ */
+function isUsefulDescription(text, url) {
+  const cleaned = sanitizeDescription(text);
+  if (cleaned.length < 2) return false;
+  const u = String(url || '').trim();
+  if (!u) return true;
+  if (cleaned.toLowerCase() === u.toLowerCase()) return false;
+  // Trivial differences: trailing slash / punctuation only
+  const trivial = (s) =>
+    s
+      .toLowerCase()
+      .replace(/[),.;:!?'"\]]+$/g, '')
+      .replace(/\/+$/g, '');
+  if (trivial(cleaned) === trivial(u)) return false;
+  return true;
+}
+
+/**
+ * Preceding label on a single line that contains url.
+ * Strips the url occurrence and trailing : - – — | separators.
+ * @param {string} line
+ * @param {string} url
+ * @returns {string|null}
+ */
+function labelBeforeUrl(line, url) {
+  if (!line || typeof line !== 'string' || !url) return null;
+  const idx = line.indexOf(url);
+  if (idx === -1) return null;
+  let before = line.slice(0, idx);
+  // Strip trailing whitespace and label separators
+  before = before.replace(/[\s:\-–—|]+$/u, '').trim();
+  if (!isUsefulDescription(before, url)) return null;
+  return sanitizeDescription(before);
+}
+
+/**
  * Extract unique HTTP(S) URLs from arbitrary text.
  * @param {string} text
  * @returns {string[]} original-ish URLs (first occurrence form), deduped by normalizeUrl
@@ -74,6 +127,33 @@ function extractUrls(text) {
   if (!text || typeof text !== 'string') return [];
   const found = text.match(URL_RE) || [];
   return dedupeUrls(found.map(trimTrailingPunctuation));
+}
+
+/**
+ * Scan text for HTTP(S) URLs and optional same-line labels.
+ * @param {string} text
+ * @param {'description'|'comment'} source
+ * @returns {Array<{url: string, source: string, description?: string}>}
+ */
+function extractLinkRecordsFromText(text, source) {
+  if (!text || typeof text !== 'string') return [];
+  const src = source === 'description' ? 'description' : 'comment';
+  const records = [];
+  const lines = text.split(/\r?\n/);
+  for (const line of lines) {
+    const matches = line.match(URL_RE) || [];
+    for (const raw of matches) {
+      const url = trimTrailingPunctuation(raw);
+      if (!/^https?:\/\//i.test(url)) continue;
+      const label =
+        labelBeforeUrl(line, raw) ||
+        (raw !== url ? labelBeforeUrl(line, url) : null);
+      const rec = { url, source: src };
+      if (label) rec.description = label;
+      records.push(rec);
+    }
+  }
+  return records;
 }
 
 /**
@@ -98,10 +178,32 @@ function dedupeUrls(urls) {
 }
 
 /**
- * Merge link records { url, source } with dedupe by normalized URL.
+ * Pick the better useful description (non-empty useful wins; else keep current).
+ * @param {string|undefined} current
+ * @param {string|undefined} incoming
+ * @param {string} url
+ * @returns {string|undefined}
+ */
+function preferDescription(current, incoming, url) {
+  const next =
+    incoming != null && isUsefulDescription(incoming, url)
+      ? sanitizeDescription(incoming)
+      : undefined;
+  const prev =
+    current != null && isUsefulDescription(current, url)
+      ? sanitizeDescription(current)
+      : undefined;
+  if (next && !prev) return next;
+  if (prev) return prev;
+  return next;
+}
+
+/**
+ * Merge link records { url, source, description? } with dedupe by normalized URL.
  * Prefer keeping 'description' over 'comment' when same URL appears in both.
- * @param {Array<{url: string, source: string}>} items
- * @returns {Array<{url: string, source: string}>}
+ * Prefer non-empty useful description over empty; equal priority keeps first url.
+ * @param {Array<{url: string, source: string, description?: string}>} items
+ * @returns {Array<{url: string, source: string, description?: string}>}
  */
 function mergeLinkRecords(items) {
   if (!Array.isArray(items)) return [];
@@ -113,14 +215,52 @@ function mergeLinkRecords(items) {
     if (!/^https?:\/\//i.test(trimmed)) continue;
     const key = normalizeUrl(trimmed);
     const source = item.source === 'description' ? 'description' : 'comment';
+    const incomingDesc =
+      item.description != null && isUsefulDescription(item.description, trimmed)
+        ? sanitizeDescription(item.description)
+        : undefined;
     const existing = map.get(key);
     if (!existing) {
-      map.set(key, { url: trimmed, source });
-    } else if ((priority[source] || 0) > (priority[existing.source] || 0)) {
-      map.set(key, { url: trimmed, source });
+      const rec = { url: trimmed, source };
+      if (incomingDesc) rec.description = incomingDesc;
+      map.set(key, rec);
+      continue;
+    }
+    const existingPri = priority[existing.source] || 0;
+    const newPri = priority[source] || 0;
+    if (newPri > existingPri) {
+      const rec = { url: trimmed, source };
+      const desc = preferDescription(existing.description, incomingDesc, trimmed);
+      if (desc) rec.description = desc;
+      map.set(key, rec);
+    } else {
+      // Equal or lower priority: keep existing url + source; upgrade description if better
+      const desc = preferDescription(
+        existing.description,
+        incomingDesc,
+        existing.url
+      );
+      if (desc) {
+        existing.description = desc;
+      } else {
+        delete existing.description;
+      }
     }
   }
   return [...map.values()];
+}
+
+/**
+ * Format a record for clipboard copy.
+ * @param {{url: string, description?: string}} record
+ * @returns {string}
+ */
+function formatCopyLine({ url, description } = {}) {
+  const u = url || '';
+  if (isUsefulDescription(description, u)) {
+    return `${sanitizeDescription(description)} — ${u}`;
+  }
+  return u;
 }
 
 // Attach to globalThis for content scripts and Vitest
@@ -131,9 +271,13 @@ const ExtractLinks = {
   extractUrls,
   dedupeUrls,
   mergeLinkRecords,
+  sanitizeDescription,
+  isUsefulDescription,
+  labelBeforeUrl,
+  extractLinkRecordsFromText,
+  formatCopyLine,
 };
 
 if (typeof globalThis !== 'undefined') {
   globalThis.ExtractLinks = ExtractLinks;
 }
-
