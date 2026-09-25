@@ -1,0 +1,14 @@
+{
+  "name": "youtube-link-extractor",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Chrome MV3 extension — extract unique links from YouTube description and comments",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.0"
+  }
+}

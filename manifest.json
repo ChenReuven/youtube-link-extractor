@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "YouTube Link Extractor",
+  "version": "1.0.0",
+  "description": "Extract unique HTTP(S) links from YouTube video descriptions and comments.",
+  "permissions": [],
+  "host_permissions": [
+    "https://www.youtube.com/*",
+    "https://youtube.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.youtube.com/watch*",
+        "https://youtube.com/watch*"
+      ],
+      "js": [
+        "src/lib/extractLinks.js",
+        "src/lib/youtubeComments.js",
+        "src/content.js"
+      ],
+      "css": ["src/ui.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "YouTube Link Extractor",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png"
+    }
+  }
+}
